@@ -1,0 +1,130 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Blueprints
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'currency', 'createdAt']) &&
+             data.keys().size() <= 10 &&
+             data.uid == request.auth.uid &&
+             data.currency is string && data.currency.size() == 3 &&
+             data.createdAt is number;
+    }
+
+    function isValidAccount(data) {
+      return data.keys().hasAll(['userId', 'currency', 'balance', 'type']) &&
+             data.keys().size() <= 10 &&
+             data.userId == request.auth.uid &&
+             data.currency is string && data.currency.size() == 3 &&
+             data.balance is number &&
+             data.type in ['wallet', 'mobile_money', 'bank'];
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['userId', 'accountId', 'amount', 'currency', 'type', 'category', 'timestamp', 'status']) &&
+             data.keys().size() <= 15 &&
+             data.userId == request.auth.uid &&
+             data.amount is number &&
+             data.currency is string && data.currency.size() == 3 &&
+             data.type in ['credit', 'debit'] &&
+             data.category is string && data.category.size() <= 50 &&
+             data.status in ['completed', 'pending', 'failed'] &&
+             data.timestamp == request.time.toMillis();
+    }
+
+    function isValidVirtualCard(data) {
+      return data.keys().hasAll(['userId', 'cardNumber', 'expiryDate', 'cvv', 'cardHolder', 'isActive', 'type']) &&
+             data.userId == request.auth.uid &&
+             data.isActive is bool;
+    }
+
+    function isValidPriceAlert(data) {
+      return data.keys().hasAll(['userId', 'symbol', 'targetPrice', 'condition', 'isActive', 'createdAt']) &&
+             data.keys().size() <= 10 &&
+             data.userId == request.auth.uid &&
+             data.symbol is string && data.symbol.size() <= 20 &&
+             data.targetPrice is number &&
+             data.condition in ['above', 'below'] &&
+             data.isActive is bool &&
+             data.createdAt is number;
+    }
+
+    // Collection matches
+    match /users/{uid} {
+      allow get: if isOwner(uid);
+      allow create: if isOwner(uid) && isValidUserProfile(incoming());
+      allow update: if isOwner(uid) && isValidUserProfile(incoming()) &&
+                     incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'currency', 'securitySetup']);
+    }
+
+    match /accounts/{accountId} {
+      allow list, get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidAccount(incoming());
+      allow update: if isSignedIn() && isOwner(existing().userId) && isValidAccount(incoming()) &&
+                     incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'label']);
+    }
+
+    match /transactions/{txId} {
+      allow list, get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidTransaction(incoming());
+      // Transactions are usually immutable
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    match /budgets/{budgetId} {
+      allow list, get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid;
+      allow update: if isSignedIn() && isOwner(existing().userId) && incoming().userId == request.auth.uid;
+      allow delete: if isSignedIn() && isOwner(existing().userId);
+    }
+
+    match /goals/{goalId} {
+      allow list, get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid;
+      allow update: if isSignedIn() && isOwner(existing().userId) && incoming().userId == request.auth.uid;
+      allow delete: if isSignedIn() && isOwner(existing().userId);
+    }
+
+    match /cards/{cardId} {
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid;
+      allow update: if isSignedIn() && isOwner(existing().userId) && 
+                     incoming().diff(existing()).affectedKeys().hasOnly(['isActive']);
+      allow delete: if isSignedIn() && isOwner(existing().userId);
+    }
+
+    match /priceAlerts/{alertId} {
+      allow list, get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidPriceAlert(incoming());
+      allow update: if isSignedIn() && isOwner(existing().userId) && isValidPriceAlert(incoming()) &&
+                     incoming().diff(existing()).affectedKeys().hasOnly(['isActive']);
+      allow delete: if isSignedIn() && isOwner(existing().userId);
+    }
+  }
+}
